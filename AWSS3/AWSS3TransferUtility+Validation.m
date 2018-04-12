@@ -44,4 +44,17 @@
     }
     return nil;
 }
+
+- (AWSTask *)validateParameters:(NSURL *)fileURL {
+    NSString *filePath = [fileURL path];
+    // Error out if the length of file name < minimum file path length (2 characters) or file does not exist
+    if ([filePath length] < 2 ||
+            ![[NSFileManager defaultManager] fileExistsAtPath:filePath]) {
+        AWSDDLogDebug(@"I am here");
+        return [AWSTask taskWithError:[NSError errorWithDomain:AWSS3TransferUtilityErrorDomain
+                                                          code:AWSS3TransferUtilityErrorLocalFileNotFound
+                                                      userInfo:nil]];
+    }
+    return nil;
+}
 @end
