@@ -360,8 +360,8 @@ handleEventsForBackgroundURLSession:(NSString *)identifier
 - (AWSTask<AWSS3TransferUtilityUploadTask *> *)uploadFile:(NSURL *)fileURL
                                              preSignedURL:(NSString *)preSignedURL
                                               contentType:(NSString *)contentType
-                                               expression:(AWSS3TransferUtilityUploadExpression *)expression
-                                        completionHandler:(AWSS3TransferUtilityUploadCompletionHandlerBlock)completionHandler;
+                                               expression:(nullable AWSS3TransferUtilityUploadExpression *)expression
+                                        completionHandler:(nullable AWSS3TransferUtilityUploadCompletionHandlerBlock)completionHandler;
 
 /**
  Uploads the file to the specified Amazon S3 bucket.
