@@ -792,6 +792,8 @@ downloadBlocksAssigner:(void (^)(AWSS3TransferUtilityDownloadTask *downloadTask,
     AWSS3TransferUtilityUploadTask *transferUtilityUploadTask = [AWSS3TransferUtilityUploadTask new];
     transferUtilityUploadTask.nsURLSessionID = self.sessionIdentifier;
     transferUtilityUploadTask.databaseQueue = self.databaseQueue;
+    transferUtilityUploadTask.bucket = @"";
+    transferUtilityUploadTask.key = @"";
     transferUtilityUploadTask.retryCount = 0;
     transferUtilityUploadTask.expression = expression;
     transferUtilityUploadTask.transferID = [[NSUUID UUID] UUIDString];
@@ -2192,8 +2194,8 @@ NSString *const AWSS3TransferUtilityCreateAWSTransfer =  @"CREATE TABLE IF NOT E
 @"ns_url_session_id TEXT NOT NULL,"
 @"session_task_id INTEGER NOT NULL,"
 @"transfer_type TEXT NOT NULL, "
-@"bucket_name TEXT, "
-@"key TEXT, "
+@"bucket_name TEXT NULL, "
+@"key TEXT NULL, "
 @"part_number INTEGER, "
 @"multi_part_id TEXT, "
 @"etag TEXT, "
