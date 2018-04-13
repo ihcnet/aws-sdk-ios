@@ -76,6 +76,7 @@ static int const AWSS3TransferUtilityMultiPartDefaultConcurrencyLimit = 5;
 @property (strong, nonatomic) NSURLSessionTask *sessionTask;
 @property (strong, nonatomic) NSString *transferID;
 @property (strong, nonatomic) NSString *bucket;
+@property (strong, nonatomic) NSString *preSignedURL;
 @property (strong, nonatomic) NSString *key;
 @property (strong, nonatomic) NSData *data;
 @property (strong, nonatomic) NSURL *location;
@@ -798,6 +799,7 @@ downloadBlocksAssigner:(void (^)(AWSS3TransferUtilityDownloadTask *downloadTask,
     transferUtilityUploadTask.cancelled = NO;
     transferUtilityUploadTask.temporaryFileCreated = temporaryFileCreated;
     transferUtilityUploadTask.responseData = @"";
+    transferUtilityUploadTask.preSignedURL = preSignedURL;
 
     return [self createUploadTaskWithPreSignedURL:preSignedURL transferUtilityUploadTask:transferUtilityUploadTask];
 }
@@ -2190,7 +2192,7 @@ NSString *const AWSS3TransferUtilityCreateAWSTransfer =  @"CREATE TABLE IF NOT E
 @"ns_url_session_id TEXT NOT NULL,"
 @"session_task_id INTEGER NOT NULL,"
 @"transfer_type TEXT NOT NULL, "
-@"bucket_name TEXT NOT NULL, "
+@"bucket_name TEXT NULL, "
 @"key TEXT NOT NULL, "
 @"part_number INTEGER, "
 @"multi_part_id TEXT, "
@@ -2201,7 +2203,8 @@ NSString *const AWSS3TransferUtilityCreateAWSTransfer =  @"CREATE TABLE IF NOT E
 @"status TEXT NOT NULL,"
 @"retry_count INTEGER NOT NULL,"
 @"request_headers TEXT,"
-@"request_parameters TEXT)";
+@"request_parameters TEXT,"
+@"pre_signed_url TEXT NULL)";
 
 
 NSString *const AWSS3TransferUtilityQueryAWSTransfer = @"Select transfer_id, session_task_id, "
@@ -2213,10 +2216,10 @@ NSString *const AWSS3TransferUtilityQueryAWSTransfer = @"Select transfer_id, ses
 
 NSString *const AWSS3TransferUtiltyInsertIntoAWSTransfer = @"INSERT INTO awstransfer ("
 @"transfer_id,ns_url_session_id, session_task_id, transfer_type, bucket_name, key, part_number, multi_part_id, etag, file, "
-@"temporary_file_created, content_length, status, retry_count, request_headers, request_parameters"
+@"temporary_file_created, content_length, status, retry_count, request_headers, request_parameters, pre_signed_url"
 @") VALUES ("
 @":transfer_id,:ns_url_session_id, :session_task_id, :transfer_type, :bucket_name, :key, :part_number, :multi_part_id, :etag, :file, :temporary_file_created, :content_length, "
-@":status, :retry_count, :request_headers, :request_parameters"
+@":status, :retry_count, :request_headers, :request_parameters, :pre_signed_url"
 @")";
 
 
@@ -2297,6 +2300,7 @@ NSString *const AWSS3TransferUtilityWaitingStatus = @"WAITING";
                          retryCount:@(task.retryCount)
                  requestHeadersJSON:[self getJSONRepresentation:task.expression.requestHeaders]
               requestParametersJSON:[self getJSONRepresentation:task.expression.requestParameters]
+                       preSignedURL:task.preSignedURL
                       databaseQueue:databaseQueue];
 }
 
@@ -2329,21 +2333,22 @@ NSString *const AWSS3TransferUtilityWaitingStatus = @"WAITING";
         file = @"";
     }
     [self insertTransferRequestInDB:task.transferID
-                    nsURLSessionID:task.nsURLSessionID
+                     nsURLSessionID:task.nsURLSessionID
                      taskIdentifier:@(task.sessionTask.taskIdentifier)
-                         transferType:@"DOWNLOAD"
+                       transferType:@"DOWNLOAD"
                              bucket:task.bucket
                                 key:task.key
                          partNumber:@0
                         multiPartID:@""
                                eTag:@""
                                file:file
-               temporaryFileCreated: NO
+               temporaryFileCreated:NO
                       contentLength:@0
                              status:AWSS3TransferUtilityInProgressStatus
                          retryCount:@(task.retryCount)
                  requestHeadersJSON:[self getJSONRepresentation:task.expression.requestHeaders]
               requestParametersJSON:[self getJSONRepresentation:task.expression.requestParameters]
+                       preSignedURL:task.preSignedURL
                       databaseQueue:databaseQueue];
 }
 
@@ -2365,6 +2370,7 @@ NSString *const AWSS3TransferUtilityWaitingStatus = @"WAITING";
                          retryCount:@(task.retryCount)
                  requestHeadersJSON:[self getJSONRepresentation:task.expression.requestHeaders]
               requestParametersJSON:[self getJSONRepresentation:task.expression.requestParameters]
+                       preSignedURL:nil
                       databaseQueue:databaseQueue];
 }
 
@@ -2387,6 +2393,7 @@ NSString *const AWSS3TransferUtilityWaitingStatus = @"WAITING";
                          retryCount:@(0)
                  requestHeadersJSON:[self getJSONRepresentation:task.expression.requestHeaders]
               requestParametersJSON:[self getJSONRepresentation:task.expression.requestParameters]
+                       preSignedURL:nil
                       databaseQueue:databaseQueue];
 }
 
@@ -2407,6 +2414,7 @@ NSString *const AWSS3TransferUtilityWaitingStatus = @"WAITING";
                         retryCount: (NSNumber *) retryCount
                 requestHeadersJSON: (NSString *) requestHeadersJSON
              requestParametersJSON: (NSString *) requestParametersJSON
+                      preSignedURL: (NSString *) preSignedURL
                      databaseQueue: (AWSFMDatabaseQueue *) databaseQueue {
     NSNumber *tempFileCreated = [NSNumber numberWithInt:0];
     if (temporaryFileCreated ) {
@@ -2431,7 +2439,8 @@ NSString *const AWSS3TransferUtilityWaitingStatus = @"WAITING";
                                           @"status": status,
                                           @"request_headers": requestHeadersJSON,
                                           @"request_parameters": requestParametersJSON,
-                                          @"retry_count": retryCount
+                                          @"retry_count": retryCount,
+                                          @"pre_signed_url": preSignedURL
                                           }];
         
         if (!result ) {

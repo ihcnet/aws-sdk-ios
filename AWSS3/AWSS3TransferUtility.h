@@ -645,6 +645,8 @@ handleEventsForBackgroundURLSession:(NSString *)identifier
  */
 @property (nullable, readonly) NSHTTPURLResponse *response;
 
+@property (nullable, readonly) NSString *preSignedURL;
+
 /**
  Cancels the task.
  */
