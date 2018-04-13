@@ -361,7 +361,7 @@ handleEventsForBackgroundURLSession:(NSString *)identifier
                                              preSignedURL:(NSString *)preSignedURL
                                               contentType:(NSString *)contentType
                                                expression:(AWSS3TransferUtilityUploadExpression *)expression
-                                        completionHandler:(AWSS3TransferUtilityUploadCompletionHandlerBlock)completionHandler
+                                        completionHandler:(AWSS3TransferUtilityUploadCompletionHandlerBlock)completionHandler;
 
 /**
  Uploads the file to the specified Amazon S3 bucket.
@@ -578,6 +578,8 @@ handleEventsForBackgroundURLSession:(NSString *)identifier
  @return An array of `AWSS3TransferUtilityDownloadTask`.
  */
 - (AWSTask<NSArray<AWSS3TransferUtilityDownloadTask *> *> *)getDownloadTasks;
+
+- (NSUInteger) getMultiPartUploadPartCount: (NSURL *)fileURL;
 
 @end
 

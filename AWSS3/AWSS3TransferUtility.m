@@ -955,12 +955,12 @@ downloadBlocksAssigner:(void (^)(AWSS3TransferUtilityDownloadTask *downloadTask,
 }
 
 - (AWSTask<AWSS3TransferUtilityMultiPartUploadTask *> *)uploadFileUsingMultiPart:(NSURL *)fileURL
-                                                                    preSignedURL:(NSString *)preSignedURL
+                                                                    preSignedURLs:(NSArray *)preSignedURLs
                                                                      contentType:(NSString *)contentType
                                                                       expression:(AWSS3TransferUtilityMultiPartUploadExpression *)expression
                                                                completionHandler:(AWSS3TransferUtilityMultiPartUploadCompletionHandlerBlock)completionHandler {
     return [self internalUploadFileUsingMultiPart:fileURL
-                                     preSignedURL:preSignedURL
+                                     preSignedURLs:preSignedURLs
                                       contentType:contentType
                                        expression:expression
                              temporaryFileCreated:NO
@@ -1111,8 +1111,20 @@ downloadBlocksAssigner:(void (^)(AWSS3TransferUtilityDownloadTask *downloadTask,
     return [AWSTask taskWithResult:transferUtilityMultiPartUploadTask];
 }
 
+- (NSUInteger) getMultiPartUploadPartCount: (NSURL *)fileURL {
+    NSError *nsError = nil;
+    NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:[fileURL path]
+                                                                                error:&nsError];
+    if (!attributes) {
+        return nil;
+    }
+
+    unsigned long long fileSize = [attributes fileSize];
+    return ceil((float) fileSize / (unsigned long) AWSS3TransferUtilityMultiPartSize);
+}
+
 - (AWSTask<AWSS3TransferUtilityMultiPartUploadTask *> *)internalUploadFileUsingMultiPart:(NSURL *)fileURL
-                                                                            preSignedURL:(NSString *)preSignedURL
+                                                                           preSignedURLs:(NSArray *)preSignedURLs
                                                                              contentType:(NSString *)contentType
                                                                               expression:(AWSS3TransferUtilityMultiPartUploadExpression *)expression
                                                                     temporaryFileCreated:(BOOL)temporaryFileCreated
@@ -1141,99 +1153,99 @@ downloadBlocksAssigner:(void (^)(AWSS3TransferUtilityDownloadTask *downloadTask,
 
     //Create TransferUtility Multipart Upload Task
     AWSS3TransferUtilityMultiPartUploadTask *transferUtilityMultiPartUploadTask = [AWSS3TransferUtilityMultiPartUploadTask new];
-    transferUtilityMultiPartUploadTask.nsURLSessionID = self.sessionIdentifier;
-    transferUtilityMultiPartUploadTask.databaseQueue = self.databaseQueue;
-    transferUtilityMultiPartUploadTask.bucket = bucket;
-    transferUtilityMultiPartUploadTask.key = key;
-    transferUtilityMultiPartUploadTask.expression = expression;
-    transferUtilityMultiPartUploadTask.transferID = [[NSUUID UUID] UUIDString];
-    transferUtilityMultiPartUploadTask.file = [fileURL path];
-    transferUtilityMultiPartUploadTask.retryCount = 0;
-    transferUtilityMultiPartUploadTask.temporaryFileCreated = temporaryFileCreated;
-
-    //Get the size of the file and calculate the number of parts.
-    NSError *nsError = nil;
-    NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:[fileURL path]
-                                                                                error:&nsError];
-    if (!attributes) {
-        if (transferUtilityMultiPartUploadTask.temporaryFileCreated) {
-            [self removeFile:transferUtilityMultiPartUploadTask.file];
-        }
-        return [AWSTask taskWithError:nsError];
-    }
-    unsigned long long fileSize = [attributes fileSize];
-    AWSDDLogDebug(@"File size is %llu", fileSize);
-    NSUInteger partCount = ceil((float) fileSize / (unsigned long) AWSS3TransferUtilityMultiPartSize);
-    AWSDDLogDebug(@"Number of parts is %lu", (unsigned long) partCount);
-    transferUtilityMultiPartUploadTask.progress.totalUnitCount = fileSize;
-    transferUtilityMultiPartUploadTask.progress.completedUnitCount = (long long) 0;
-    transferUtilityMultiPartUploadTask.cancelled = NO;
-    transferUtilityMultiPartUploadTask.contentLength = [[NSNumber alloc] initWithUnsignedLongLong:fileSize];
-
-    //Create the initial request to start the multipart process.
-    AWSS3CreateMultipartUploadRequest *uploadRequest = [AWSS3CreateMultipartUploadRequest new];
-    uploadRequest.bucket = bucket;
-    uploadRequest.key = key;
-
-    [self propagateHeaderInformation:uploadRequest expression:transferUtilityMultiPartUploadTask.expression];
-
-    //Initiate the multi part
-    return [[self.s3 createMultipartUpload:uploadRequest] continueWithBlock:^id(AWSTask *task) {
-        //Initiation of multi part failed.
-        if (task.error) {
-            if (transferUtilityMultiPartUploadTask.temporaryFileCreated) {
-                [self removeFile:transferUtilityMultiPartUploadTask.file];
-            }
-            return [AWSTask taskWithError:task.error];
-        }
-        //Get the uploadID. This will be used with every part that we will upload.
-        AWSS3CreateMultipartUploadOutput *output = task.result;
-        transferUtilityMultiPartUploadTask.uploadID = output.uploadId;
-
-        //Save the Multipart Upload in the DB
-        [self insertMultiPartUploadRequestInDB:transferUtilityMultiPartUploadTask databaseQueue:self->_databaseQueue];
-
-        AWSDDLogInfo(@"Initiated multipart upload on server: %@", output.uploadId);
-        AWSDDLogInfo(@"Concurrency Limit is %@", self.transferUtilityConfiguration.multiPartConcurrencyLimit);
-        //Loop through the file and upload the parts one by one
-        for (int32_t i = 1; i < partCount + 1; i++) {
-            NSUInteger dataLength = AWSS3TransferUtilityMultiPartSize;
-            if (i == partCount) {
-                dataLength = fileSize - ((i - 1) * AWSS3TransferUtilityMultiPartSize);
-            }
-
-            //Create a temporary file for this part.
-            NSFileHandle *fileHandle = [NSFileHandle fileHandleForReadingAtPath:[fileURL path]];
-            [fileHandle seekToFileOffset:(i - 1) * AWSS3TransferUtilityMultiPartSize];
-            NSData *partData = [fileHandle readDataOfLength:dataLength];
-            NSString *file = [self.cacheDirectoryPath stringByAppendingPathComponent:[[NSUUID UUID] UUIDString]];
-            NSURL *tempURL = [NSURL fileURLWithPath:file];
-            [partData writeToURL:tempURL atomically:YES];
-            partData = nil;
-            [fileHandle closeFile];
-
-            AWSS3TransferUtilityUploadSubTask *subTask = [AWSS3TransferUtilityUploadSubTask new];
-            subTask.transferID = transferUtilityMultiPartUploadTask.transferID;
-            subTask.partNumber = @(i);
-            subTask.totalBytesExpectedToSend = dataLength;
-            subTask.totalBytesSent = (long long) 0;
-            subTask.file = file;
-            subTask.responseData = @"";
-            //Move the waitingParts to inProgress based on concurrency limit
-            if (i <= [self.transferUtilityConfiguration.multiPartConcurrencyLimit integerValue]) {
-                subTask.status = AWSS3TransferUtilityInProgressStatus;
-                [self createUploadSubTask:transferUtilityMultiPartUploadTask subTask:subTask startTransfer:YES];
-            } else {
-                subTask.status = AWSS3TransferUtilityWaitingStatus;
-                [self createUploadSubTask:transferUtilityMultiPartUploadTask subTask:subTask startTransfer:NO];
-            }
-
-        }
-        if (transferUtilityMultiPartUploadTask.temporaryFileCreated) {
-            [self removeFile:transferUtilityMultiPartUploadTask.file];
-        }
-        return [AWSTask taskWithResult:transferUtilityMultiPartUploadTask];
-    }];
+//    transferUtilityMultiPartUploadTask.nsURLSessionID = self.sessionIdentifier;
+//    transferUtilityMultiPartUploadTask.databaseQueue = self.databaseQueue;
+//    transferUtilityMultiPartUploadTask.bucket = bucket;
+//    transferUtilityMultiPartUploadTask.key = key;
+//    transferUtilityMultiPartUploadTask.expression = expression;
+//    transferUtilityMultiPartUploadTask.transferID = [[NSUUID UUID] UUIDString];
+//    transferUtilityMultiPartUploadTask.file = [fileURL path];
+//    transferUtilityMultiPartUploadTask.retryCount = 0;
+//    transferUtilityMultiPartUploadTask.temporaryFileCreated = temporaryFileCreated;
+//
+//    //Get the size of the file and calculate the number of parts.
+//    NSError *nsError = nil;
+//    NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:[fileURL path]
+//                                                                                error:&nsError];
+//    if (!attributes) {
+//        if (transferUtilityMultiPartUploadTask.temporaryFileCreated) {
+//            [self removeFile:transferUtilityMultiPartUploadTask.file];
+//        }
+//        return [AWSTask taskWithError:nsError];
+//    }
+//    unsigned long long fileSize = [attributes fileSize];
+//    AWSDDLogDebug(@"File size is %llu", fileSize);
+//    NSUInteger partCount = ceil((float) fileSize / (unsigned long) AWSS3TransferUtilityMultiPartSize);
+//    AWSDDLogDebug(@"Number of parts is %lu", (unsigned long) partCount);
+//    transferUtilityMultiPartUploadTask.progress.totalUnitCount = fileSize;
+//    transferUtilityMultiPartUploadTask.progress.completedUnitCount = (long long) 0;
+//    transferUtilityMultiPartUploadTask.cancelled = NO;
+//    transferUtilityMultiPartUploadTask.contentLength = [[NSNumber alloc] initWithUnsignedLongLong:fileSize];
+//
+//    //Create the initial request to start the multipart process.
+//    AWSS3CreateMultipartUploadRequest *uploadRequest = [AWSS3CreateMultipartUploadRequest new];
+//    uploadRequest.bucket = bucket;
+//    uploadRequest.key = key;
+//
+//    [self propagateHeaderInformation:uploadRequest expression:transferUtilityMultiPartUploadTask.expression];
+//
+//    //Initiate the multi part
+//    return [[self.s3 createMultipartUpload:uploadRequest] continueWithBlock:^id(AWSTask *task) {
+//        //Initiation of multi part failed.
+//        if (task.error) {
+//            if (transferUtilityMultiPartUploadTask.temporaryFileCreated) {
+//                [self removeFile:transferUtilityMultiPartUploadTask.file];
+//            }
+//            return [AWSTask taskWithError:task.error];
+//        }
+//        //Get the uploadID. This will be used with every part that we will upload.
+//        AWSS3CreateMultipartUploadOutput *output = task.result;
+//        transferUtilityMultiPartUploadTask.uploadID = output.uploadId;
+//
+//        //Save the Multipart Upload in the DB
+//        [self insertMultiPartUploadRequestInDB:transferUtilityMultiPartUploadTask databaseQueue:self->_databaseQueue];
+//
+//        AWSDDLogInfo(@"Initiated multipart upload on server: %@", output.uploadId);
+//        AWSDDLogInfo(@"Concurrency Limit is %@", self.transferUtilityConfiguration.multiPartConcurrencyLimit);
+//        //Loop through the file and upload the parts one by one
+//        for (int32_t i = 1; i < partCount + 1; i++) {
+//            NSUInteger dataLength = AWSS3TransferUtilityMultiPartSize;
+//            if (i == partCount) {
+//                dataLength = fileSize - ((i - 1) * AWSS3TransferUtilityMultiPartSize);
+//            }
+//
+//            //Create a temporary file for this part.
+//            NSFileHandle *fileHandle = [NSFileHandle fileHandleForReadingAtPath:[fileURL path]];
+//            [fileHandle seekToFileOffset:(i - 1) * AWSS3TransferUtilityMultiPartSize];
+//            NSData *partData = [fileHandle readDataOfLength:dataLength];
+//            NSString *file = [self.cacheDirectoryPath stringByAppendingPathComponent:[[NSUUID UUID] UUIDString]];
+//            NSURL *tempURL = [NSURL fileURLWithPath:file];
+//            [partData writeToURL:tempURL atomically:YES];
+//            partData = nil;
+//            [fileHandle closeFile];
+//
+//            AWSS3TransferUtilityUploadSubTask *subTask = [AWSS3TransferUtilityUploadSubTask new];
+//            subTask.transferID = transferUtilityMultiPartUploadTask.transferID;
+//            subTask.partNumber = @(i);
+//            subTask.totalBytesExpectedToSend = dataLength;
+//            subTask.totalBytesSent = (long long) 0;
+//            subTask.file = file;
+//            subTask.responseData = @"";
+//            //Move the waitingParts to inProgress based on concurrency limit
+//            if (i <= [self.transferUtilityConfiguration.multiPartConcurrencyLimit integerValue]) {
+//                subTask.status = AWSS3TransferUtilityInProgressStatus;
+//                [self createUploadSubTask:transferUtilityMultiPartUploadTask subTask:subTask startTransfer:YES];
+//            } else {
+//                subTask.status = AWSS3TransferUtilityWaitingStatus;
+//                [self createUploadSubTask:transferUtilityMultiPartUploadTask subTask:subTask startTransfer:NO];
+//            }
+//
+//        }
+//        if (transferUtilityMultiPartUploadTask.temporaryFileCreated) {
+//            [self removeFile:transferUtilityMultiPartUploadTask.file];
+//        }
+//        return [AWSTask taskWithResult:transferUtilityMultiPartUploadTask];
+//    }];
     return [AWSTask taskWithResult:transferUtilityMultiPartUploadTask];
 }
 
@@ -1381,57 +1393,6 @@ downloadBlocksAssigner:(void (^)(AWSS3TransferUtilityDownloadTask *downloadTask,
         //Also register transferUtilityMultiPartUploadTask into the taskDictionary for easy lookup in the NSURLCallback
         [self->_taskDictionary setObject:transferUtilityMultiPartUploadTask forKey:@(subTask.taskIdentifier)];
         
-        //Save in Database
-        [self insertMultiPartUploadRequestSubTaskInDB:transferUtilityMultiPartUploadTask subTask:subTask databaseQueue:self.databaseQueue];
-        return nil;
-    }];
-}
-
-- (void)createUploadSubTask:(AWSS3TransferUtilityMultiPartUploadTask *)transferUtilityMultiPartUploadTask
-                    subTask:(AWSS3TransferUtilityUploadSubTask *)subTask
-              startTransfer:(BOOL)startTransfer {
-    //Create a presignedURL for this part.
-    AWSS3GetPreSignedURLRequest *request = [AWSS3GetPreSignedURLRequest new];
-    request.bucket = transferUtilityMultiPartUploadTask.bucket;
-    request.key = transferUtilityMultiPartUploadTask.key;
-    request.partNumber = subTask.partNumber;
-    request.uploadID = transferUtilityMultiPartUploadTask.uploadID;
-    request.HTTPMethod = AWSHTTPMethodPUT;
-
-    request.expires = [NSDate dateWithTimeIntervalSinceNow:AWSS3TransferUtilityTimeoutIntervalForResource];
-    request.minimumCredentialsExpirationInterval = AWSS3TransferUtilityTimeoutIntervalForResource;
-    request.accelerateModeEnabled = self.transferUtilityConfiguration.isAccelerateModeEnabled;
-    [self filterAndAssignHeaders:transferUtilityMultiPartUploadTask.expression.requestHeaders getPresignedURLRequest:request
-                      URLRequest:nil];
-
-    [transferUtilityMultiPartUploadTask.expression assignRequestParameters:request];
-    //todo: Here instead of requesting it from AWS, request it through backend -> aws
-    [[self.preSignedURLBuilder getPreSignedURL:request] continueWithSuccessBlock:^id(AWSTask *task) {
-        NSURL *presignedURL = task.result;
-        NSMutableURLRequest *urlRequest = [NSMutableURLRequest requestWithURL:presignedURL];
-        urlRequest.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
-        urlRequest.HTTPMethod = @"PUT";
-        [self filterAndAssignHeaders:transferUtilityMultiPartUploadTask.expression.requestHeaders
-              getPresignedURLRequest:nil URLRequest:urlRequest];
-        [urlRequest setValue:[self.configuration.userAgent stringByAppendingString:@" MultiPart"] forHTTPHeaderField:@"User-Agent"];
-        NSURLSessionUploadTask *nsURLUploadTask = [self->_session uploadTaskWithRequest:urlRequest
-                                                                               fromFile:[NSURL fileURLWithPath:subTask.file]];
-        //Create subtask to track this upload
-        subTask.sessionTask = nsURLUploadTask;
-        subTask.taskIdentifier = nsURLUploadTask.taskIdentifier;
-
-        if (startTransfer) {
-            [transferUtilityMultiPartUploadTask.inProgressPartsDictionary setObject:subTask forKey:@(subTask.taskIdentifier)];
-            [nsURLUploadTask resume];
-            AWSDDLogDebug(@"Upload started %lu", (unsigned long) nsURLUploadTask.taskIdentifier);
-        } else {
-            //Put the subtask into the waiting parts dictionary, with uploadTask as the key.
-            [transferUtilityMultiPartUploadTask.waitingPartsDictionary setObject:subTask forKey:@(subTask.taskIdentifier)];
-        }
-
-        //Also register transferUtilityMultiPartUploadTask into the taskDictionary for easy lookup in the NSURLCallback
-        [self->_taskDictionary setObject:transferUtilityMultiPartUploadTask forKey:@(subTask.taskIdentifier)];
-
         //Save in Database
         [self insertMultiPartUploadRequestSubTaskInDB:transferUtilityMultiPartUploadTask subTask:subTask databaseQueue:self.databaseQueue];
         return nil;
